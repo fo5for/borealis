@@ -22,7 +22,10 @@
 
 #include <stop_token>
 #include <thread>
+#include <atomic>
 #include <borealis/core/input.hpp>
+#include <borealis/platforms/switch/switch_mouse.hpp>
+#include <borealis/platforms/switch/switch_half_joycon.hpp>
 
 #define TOUCHES_MAX 10
 
@@ -63,33 +66,80 @@ class SwitchInputManager : public InputManager
     void drawCursor(NVGcontext* vg) override;
 
     void clearVibration(int controller);
+    void setHalfJoyConMapping(HalfJoyConSide side, const HalfJoyConMapping& mapping);
+    void setHalfJoyConMappingEnabled(bool enabled);
+    bool isHalfJoyConMappingActive(int controller) const;
+#ifdef __SWITCH2__
+    void setJoyConMouseCursorSpeed(float speed) { this->mouse.setCursorSpeed(speed); }
+    void setMouseScrollSensitivity(float sensitivity)
+    {
+        this->menuScrollSensitivity = std::isfinite(sensitivity) ? std::clamp(sensitivity, 0.1f, 2.0f) : 1.0f;
+    }
+#endif
 
     /*
-    * It will not report about screenshot button state, if screenshotButtonOverrideMode equals NONE
-    */
-    bool isScreenshotButtonPressed() { return m_isScreenshotPressed; }
+     * It will not report about screenshot button state, if screenshotButtonOverrideMode equals NONE
+     */
+    bool isScreenshotButtonPressed() { return m_screenshotButtonMode != ButtonOverrideMode::NONE && !halfSystemConsumed[0] && m_isScreenshotPressed; }
 
     /*
-    * It will not report about home button state, if homeButtonOverrideMode equals NONE
-    */
-    bool isHomeButtonPressed() { return m_isHomePressed; }
+     * It will not report about home button state, if homeButtonOverrideMode equals NONE
+     */
+    bool isHomeButtonPressed() { return m_homeButtonMode != ButtonOverrideMode::NONE && !halfSystemConsumed[1] && m_isHomePressed; }
 
     ButtonOverrideMode screenshotButtonOverrideMode() { return m_screenshotButtonMode; }
-    void setScreenshotButtonOverrideMode(ButtonOverrideMode value) { m_screenshotButtonMode = value; }
+    void setScreenshotButtonOverrideMode(ButtonOverrideMode value)
+    {
+        m_screenshotButtonMode = value;
+        if (value == ButtonOverrideMode::NONE && !halfSystemConsumed[0])
+            m_isScreenshotPressed = false;
+    }
 
     ButtonOverrideMode homeButtonOverrideMode() { return m_homeButtonMode; }
-    void setHomeButtonOverrideMode(ButtonOverrideMode value) { m_homeButtonMode = value; }
+    void setHomeButtonOverrideMode(ButtonOverrideMode value)
+    {
+        m_homeButtonMode = value;
+        if (value == ButtonOverrideMode::NONE && !halfSystemConsumed[1])
+            m_isHomePressed = false;
+    }
+
+#ifdef __SWITCH2__
+    bool isChatButtonPressed() { return m_chatButtonMode != ButtonOverrideMode::NONE && !halfSystemConsumed[2] && m_isChatPressed; }
+    ButtonOverrideMode chatButtonOverrideMode() { return m_chatButtonMode; }
+    void setChatButtonOverrideMode(ButtonOverrideMode value)
+    {
+        m_chatButtonMode = value;
+        if (value == ButtonOverrideMode::NONE && !halfSystemConsumed[2])
+            m_isChatPressed = false;
+    }
+#endif
 
   private:
-    void screenshot_button_thread_fn(std::stop_token token);
-    std::jthread screenshot_button_thread;
+    void system_button_thread_fn(std::stop_token token);
+    void processSystemButtonEvent(::Event* event, int button);
+    void refreshHalfJoyConClaims();
+    void applyHalfMapping(ControllerState* state, PadState* pad, u64 buttons);
+    std::array<HalfJoyConMapping, 2> halfMappings = {
+        defaultHalfJoyConMapping(HalfJoyConSide::LEFT), defaultHalfJoyConMapping(HalfJoyConSide::RIGHT)
+    };
+    std::atomic<bool> halfMappingEnabled                        = false;
+    std::array<std::atomic<u32>, GAMEPADS_MAX> halfSystemClaims = { };
+    std::array<std::atomic<u64>, 3> halfSourceCandidates        = { };
+    std::atomic<u32> halfAnyClaims                              = 0;
+    std::array<std::atomic<bool>, 3> halfSystemConsumed         = { };
+    std::array<std::atomic<int>, 3> systemButtonOwners          = { -1, -1, -1 };
+    std::jthread system_button_thread;
 
-    ButtonOverrideMode m_screenshotButtonMode = ButtonOverrideMode::NONE;
-    ButtonOverrideMode m_homeButtonMode = ButtonOverrideMode::NONE;
+    std::atomic<ButtonOverrideMode> m_screenshotButtonMode = ButtonOverrideMode::NONE;
+    std::atomic<ButtonOverrideMode> m_homeButtonMode       = ButtonOverrideMode::NONE;
 
   private:
-    bool m_isScreenshotPressed = false;
-    bool m_isHomePressed = false;
+    std::atomic<bool> m_isScreenshotPressed = false;
+    std::atomic<bool> m_isHomePressed       = false;
+#ifdef __SWITCH2__
+    std::atomic<ButtonOverrideMode> m_chatButtonMode = ButtonOverrideMode::NONE;
+    std::atomic<bool> m_isChatPressed                = false;
+#endif
 
     bool cursorInited = false;
     int cursorWidth, cursorHeight;
@@ -104,7 +154,13 @@ class SwitchInputManager : public InputManager
     HidVibrationValue m_vibration_values[GAMEPADS_MAX][2];
     u32 padsStyleSet[GAMEPADS_MAX];
     bool pointerLocked = false;
-    HidMouseState currentMouseState;
+    SwitchMouse mouse;
+    SwitchMouseState currentMouseState = { };
+#ifdef __SWITCH2__
+    float menuScrollSensitivity = 1.0f;
+    bool joyConMotionLogged = false;
+    bool joyConScrollLogged = false;
+#endif
     HidSixAxisSensorHandle m_six_axis_sensor_handle[4]; // All for player 1, player 2 not supported
 
     std::vector<bool> m_hid_keyboard_state;
